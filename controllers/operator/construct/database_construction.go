@@ -192,6 +192,8 @@ type databaseStatefulSetSource interface {
 	GetAnnotations() map[string]string
 
 	GetDownloadBase() string
+
+	IsRoleAppDB() bool
 }
 
 // StandaloneOptions returns a set of options which will configure a Standalone StatefulSet
@@ -471,6 +473,18 @@ func buildVaultDatabaseSecretsToInject(mdb databaseStatefulSetSource, opts Datab
 	return secretsToInject
 }
 
+// podAntiAffinityName returns the value identifying a resource's pods in the pod-anti-affinity
+// label, from which the StatefulSet selector is built. A role-AppDB resource adopts the Ops
+// Manager AppDB StatefulSet, whose selector carries the per-cluster StatefulSet name, so it must
+// produce the same value; every other resource keeps the resource name so existing StatefulSets
+// stay updatable on upgrade (spec.selector is immutable).
+func podAntiAffinityName(mdb databaseStatefulSetSource, opts DatabaseStatefulSetOptions) string {
+	if mdb.IsRoleAppDB() {
+		return opts.GetStatefulSetName()
+	}
+	return opts.Name
+}
+
 // buildDatabaseStatefulSetConfigurationFunction returns the function that will modify the StatefulSet
 func buildDatabaseStatefulSetConfigurationFunction(mdb databaseStatefulSetSource, podTemplateSpecFunc podtemplatespec.Modification, opts DatabaseStatefulSetOptions, log *zap.SugaredLogger) statefulset.Modification {
 	stsName := opts.GetStatefulSetName()
@@ -478,7 +492,7 @@ func buildDatabaseStatefulSetConfigurationFunction(mdb databaseStatefulSetSource
 	podLabels := map[string]string{
 		appLabelKey:             opts.ServiceName,
 		util.OperatorLabelName:  util.OperatorLabelValue,
-		PodAntiAffinityLabelKey: stsName,
+		PodAntiAffinityLabelKey: podAntiAffinityName(mdb, opts),
 	}
 
 	configurePodSpecSecurityContext, configureContainerSecurityContext := podtemplatespec.WithDefaultSecurityContextsModifications()
@@ -583,7 +597,7 @@ func buildDatabaseStatefulSetConfigurationFunction(mdb databaseStatefulSetSource
 
 	podTemplateModifications := []podtemplatespec.Modification{
 		podTemplateAnnotationFunc,
-		podtemplatespec.WithAffinity(stsName, PodAntiAffinityLabelKey, 100),
+		podtemplatespec.WithAffinity(podAntiAffinityName(mdb, opts), PodAntiAffinityLabelKey, 100),
 		podtemplatespec.WithTerminationGracePeriodSeconds(util.DefaultPodTerminationPeriodSeconds),
 		podtemplatespec.WithPodLabels(podLabels),
 		podtemplatespec.WithContainerByIndex(0, sharedDatabaseContainerFunc(databaseImage, *opts.PodSpec, volumeMounts, configureContainerSecurityContext, opts.ServicePort)),
@@ -775,7 +789,7 @@ func buildMongoDBPodTemplateSpec(opts DatabaseStatefulSetOptions, mdb databaseSt
 	} else {
 		modifications = buildNonStaticArchitecturePodTemplateSpec(opts, mdb)
 	}
-	sharedModifications := sharedDatabaseConfiguration(opts)
+	sharedModifications := sharedDatabaseConfiguration(opts, mdb)
 	return podtemplatespec.Apply(sharedModifications, modifications)
 }
 
@@ -889,7 +903,7 @@ func buildNonStaticArchitecturePodTemplateSpec(opts DatabaseStatefulSetOptions, 
 	}
 
 	mods := []podtemplatespec.Modification{
-		sharedDatabaseConfiguration(opts),
+		sharedDatabaseConfiguration(opts, mdb),
 		podtemplatespec.WithServiceAccount(util.MongoDBServiceAccount),
 		podtemplatespec.WithServiceAccount(getServiceAccountName(opts)),
 		podtemplatespec.WithVolumes(volumes),
@@ -917,7 +931,8 @@ func getServiceAccountName(opts DatabaseStatefulSetOptions) string {
 
 // sharedDatabaseConfiguration is a function which applies all the shared configuration
 // between the appDb and MongoDB resources
-func sharedDatabaseConfiguration(opts DatabaseStatefulSetOptions) podtemplatespec.Modification {
+func sharedDatabaseConfiguration(opts DatabaseStatefulSetOptions, mdb databaseStatefulSetSource) podtemplatespec.Modification {
+	antiAffinityValue := podAntiAffinityName(mdb, opts)
 	configurePodSpecSecurityContext, _ := podtemplatespec.WithDefaultSecurityContextsModifications()
 
 	pullSecretsConfigurationFunc := podtemplatespec.NOOP()
@@ -926,11 +941,11 @@ func sharedDatabaseConfiguration(opts DatabaseStatefulSetOptions) podtemplatespe
 	}
 
 	return podtemplatespec.Apply(
-		podtemplatespec.WithPodLabels(defaultPodLabels(opts.ServiceName, opts.GetStatefulSetName())),
+		podtemplatespec.WithPodLabels(defaultPodLabels(opts.ServiceName, antiAffinityValue)),
 		podtemplatespec.WithTerminationGracePeriodSeconds(util.DefaultPodTerminationPeriodSeconds),
 		pullSecretsConfigurationFunc,
 		configurePodSpecSecurityContext,
-		podtemplatespec.WithAffinity(opts.GetStatefulSetName(), PodAntiAffinityLabelKey, 100),
+		podtemplatespec.WithAffinity(antiAffinityValue, PodAntiAffinityLabelKey, 100),
 		podtemplatespec.WithTopologyKey(opts.PodSpec.GetTopologyKeyOrDefault(), 0),
 	)
 }
