@@ -5,6 +5,11 @@ name: CNTi essential tests (operator + MongoDBCommunity)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [e2e-run-as-group]
+    paths:
+      - .github/workflows/cnti-measure.yml
+      - .github/cnti-e2e/**
 
 permissions:
   contents: read
