@@ -1,0 +1,61 @@
+# Fork-only check for #1629: the released operator and the operator built
+# from this branch each run a two-member MongoDBCommunity replica set with an
+# arbiter on kind; the job summary shows the processes' ids, the replica set's
+# state and the CNTi Test Suite's non_root_containers verdict.
+name: runAsGroup e2e (#1629)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [e2e-run-as-group]
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, patched]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.variant == 'patched'
+        with:
+          go-version-file: go.mod
+
+      # The released 1.13.0 image with only the operator binary replaced by
+      # one built from this branch.
+      - name: Build the patched operator image
+        if: matrix.variant == 'patched'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          CGO_ENABLED=0 go build -buildvcs=false -ldflags "-s -w -X github.com/mongodb/mongodb-kubernetes/pkg/util.OperatorVersion=1.13.0" -o out/mongodb-kubernetes-operator .
+          printf 'FROM quay.io/mongodb/mongodb-kubernetes:1.13.0\nCOPY mongodb-kubernetes-operator /usr/local/bin/mongodb-kubernetes-operator\n' > out/Dockerfile
+          docker build -t local/mongodb-kubernetes:1.13.0-rungroup out
+
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: e2e
+          config: .github/cnti-e2e/kind.yaml
+
+      - name: Load the patched image into kind
+        if: matrix.variant == 'patched'
+        run: kind load docker-image local/mongodb-kubernetes:1.13.0-rungroup --name e2e
+
+      - name: Install the CNTi Test Suite v2.2.0
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/lfn-cnti/testsuite/releases/download/v2.2.0/cnti-testsuite-v2.2.0.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/cnti-testsuite" /usr/local/bin/cnti-testsuite
+
+      - name: Run
+        run: .github/cnti-e2e/run.sh ${{ matrix.variant }}
