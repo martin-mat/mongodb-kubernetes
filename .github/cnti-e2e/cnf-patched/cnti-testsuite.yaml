@@ -1,0 +1,15 @@
+# The same CNF with the chart from helm_chart/ and the operator binary built
+# from this branch (with or without #1698) in the released 1.13.0 image.
+---
+config_version: v2
+deployments:
+  helm_dirs:
+  - name: mongodb-operator
+    helm_directory: ../../../helm_chart
+    namespace: mdb
+    helm_values: --set registry.operator=local --set operator.version=1.13.0-patched --set registry.pullPolicy=IfNotPresent
+    priority: 1
+  manifests:
+  - name: mdb
+    manifest_directory: ../cnf/manifests
+    priority: 2

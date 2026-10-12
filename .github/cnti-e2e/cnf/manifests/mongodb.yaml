@@ -1,0 +1,31 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mdb-app-password
+  namespace: mdb
+type: Opaque
+stringData:
+  password: test-only-password
+---
+apiVersion: mongodbcommunity.mongodb.com/v1
+kind: MongoDBCommunity
+metadata:
+  name: mdb
+  namespace: mdb
+spec:
+  type: ReplicaSet
+  version: "8.0.13"
+  members: 2
+  arbiters: 1
+  security:
+    authentication:
+      modes: ["SCRAM"]
+  users:
+    - name: app
+      db: admin
+      passwordSecretRef:
+        name: mdb-app-password
+      scramCredentialsSecretName: mdb-app
+      roles:
+        - name: root
+          db: admin
