@@ -1,0 +1,98 @@
+# Fork-only: tests the operator health probes (#1627). The chart unit tests,
+# then the CNTi essential tests against the operator and a MongoDBCommunity
+# replica set as one CNF: released 1.13.0, this fix, and this fix with #1698.
+name: Operator health probes (#1627)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [e2e-health-probes]
+
+permissions:
+  contents: read
+
+jobs:
+  chart-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: helm unittest
+        run: |
+          set -euo pipefail
+          helm plugin install https://github.com/helm-unittest/helm-unittest >/dev/null
+          helm unittest helm_chart --color
+
+  go-build-and-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet . ./pkg/util/...
+      - run: go test ./pkg/util/...
+
+  measure:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, probes, probes-and-1698]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Add the #1698 fix
+        if: matrix.variant == 'probes-and-1698'
+        run: |
+          set -euo pipefail
+          git fetch https://github.com/martin-mat/mongodb-kubernetes.git fix-run-as-group
+          git -c user.name=ci -c user.email=ci@example.invalid cherry-pick FETCH_HEAD
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.variant != 'baseline'
+        with:
+          go-version-file: go.mod
+
+      - name: Build the patched operator image
+        if: matrix.variant != 'baseline'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          CGO_ENABLED=0 go build -buildvcs=false -ldflags "-s -w -X github.com/mongodb/mongodb-kubernetes/pkg/util.OperatorVersion=1.13.0" -o out/mongodb-kubernetes-operator .
+          printf 'FROM quay.io/mongodb/mongodb-kubernetes:1.13.0\nCOPY mongodb-kubernetes-operator /usr/local/bin/mongodb-kubernetes-operator\n' > out/Dockerfile
+          docker build -t local/mongodb-kubernetes:1.13.0-patched out
+
+      # A control plane and two workers, as the testsuite-action's default.
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: e2e
+          config: .github/cnti-e2e/kind.yaml
+
+      - name: Load the patched image into kind
+        if: matrix.variant != 'baseline'
+        run: kind load docker-image local/mongodb-kubernetes:1.13.0-patched --name e2e
+
+      - name: Install the CNTi Test Suite v2.2.0
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/lfn-cnti/testsuite/releases/download/v2.2.0/cnti-testsuite-v2.2.0.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/cnti-testsuite" /usr/local/bin/cnti-testsuite
+
+      - name: Run the essential tests
+        run: .github/cnti-e2e/measure.sh ${{ matrix.variant == 'baseline' && 'baseline' || 'patched' }} ${{ matrix.variant }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cnti-results-${{ matrix.variant }}
+          path: results-*/
+          if-no-files-found: ignore
