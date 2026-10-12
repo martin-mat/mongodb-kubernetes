@@ -1,0 +1,64 @@
+# Fork-only: the CNTi essential tests against the MongoDB operator as a CNF
+# (the operator chart and a MongoDBCommunity replica set), released 1.13.0 and
+# this branch side by side.
+name: CNTi essential tests (operator + MongoDBCommunity)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: ${{ matrix.variant }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [baseline, patched]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        if: matrix.variant == 'patched'
+        with:
+          go-version-file: go.mod
+
+      - name: Build the patched operator image
+        if: matrix.variant == 'patched'
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          CGO_ENABLED=0 go build -buildvcs=false -ldflags "-s -w -X github.com/mongodb/mongodb-kubernetes/pkg/util.OperatorVersion=1.13.0" -o out/mongodb-kubernetes-operator .
+          printf 'FROM quay.io/mongodb/mongodb-kubernetes:1.13.0\nCOPY mongodb-kubernetes-operator /usr/local/bin/mongodb-kubernetes-operator\n' > out/Dockerfile
+          docker build -t local/mongodb-kubernetes:1.13.0-rungroup out
+
+      # A control plane and two workers, as the testsuite-action's default.
+      - uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          cluster_name: e2e
+          config: .github/cnti-e2e/kind.yaml
+
+      - name: Load the patched image into kind
+        if: matrix.variant == 'patched'
+        run: kind load docker-image local/mongodb-kubernetes:1.13.0-rungroup --name e2e
+
+      - name: Install the CNTi Test Suite v2.2.0
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/lfn-cnti/testsuite/releases/download/v2.2.0/cnti-testsuite-v2.2.0.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          sudo install -m 0755 "$RUNNER_TEMP/cnti-testsuite" /usr/local/bin/cnti-testsuite
+
+      - name: Run the essential tests
+        run: .github/cnti-e2e/measure.sh ${{ matrix.variant }}
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: cnti-results-${{ matrix.variant }}
+          path: results-${{ matrix.variant }}/
+          if-no-files-found: ignore

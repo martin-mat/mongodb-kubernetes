@@ -1,0 +1,18 @@
+# The MongoDB operator as a CNF: the operator chart with its defaults (it
+# watches its own namespace), then a MongoDBCommunity replica set in that
+# namespace. Released 1.13.0.
+---
+config_version: v2
+deployments:
+  helm_charts:
+  - name: mongodb-operator
+    helm_repo_name: mongodb
+    helm_repo_url: https://mongodb.github.io/helm-charts
+    helm_chart_name: mongodb-kubernetes
+    chart_version: "1.13.0"
+    namespace: mdb
+    priority: 1
+  manifests:
+  - name: mdb
+    manifest_directory: ../cnf/manifests
+    priority: 2
