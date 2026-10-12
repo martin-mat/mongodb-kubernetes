@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -2199,12 +2200,8 @@ func TestEnsureAppDBStatefulSetOwnership(t *testing.T) {
 
 	mergeLabels := func(base map[string]string, extra map[string]string) map[string]string {
 		merged := make(map[string]string, len(base)+len(extra))
-		for k, v := range base {
-			merged[k] = v
-		}
-		for k, v := range extra {
-			merged[k] = v
-		}
+		maps.Copy(merged, base)
+		maps.Copy(merged, extra)
 		return merged
 	}
 
