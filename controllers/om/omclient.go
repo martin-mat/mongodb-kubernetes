@@ -293,15 +293,20 @@ func (oc *HTTPOmConnection) ReadAuditLogRotation() (*automationconfig.AcLogRotat
 	return &result, nil
 }
 
+// GetAgentAuthMode returns the autoAuthMechanism of the group's automation config. Only the 'auth'
+// key is decoded, avoiding materializing the whole automation config.
 func (oc *HTTPOmConnection) GetAgentAuthMode() (string, error) {
-	ac, err := oc.ReadAutomationConfig()
+	var partial struct {
+		Auth *Auth `json:"auth"`
+	}
+	err := oc.getInto(fmt.Sprintf("/api/public/v1.0/groups/%s/automationConfig", oc.GroupID()), &partial)
 	if err != nil {
 		return "", err
 	}
-	if ac.Auth == nil {
+	if partial.Auth == nil {
 		return "", nil
 	}
-	return ac.Auth.AutoAuthMechanism, nil
+	return partial.Auth.AutoAuthMechanism, nil
 }
 
 var _ Connection = &HTTPOmConnection{}
@@ -400,23 +405,20 @@ func (oc *HTTPOmConnection) UpdateDeployment(deployment Deployment) ([]byte, err
 
 // ReadDeployment returns a Deployment object for this group
 func (oc *HTTPOmConnection) ReadDeployment() (Deployment, error) {
-	ans, err := oc.get(fmt.Sprintf("/api/public/v1.0/groups/%s/automationConfig", oc.GroupID()))
+	var d Deployment
+	err := oc.getInto(fmt.Sprintf("/api/public/v1.0/groups/%s/automationConfig", oc.GroupID()), &d)
 	if err != nil {
 		return nil, err
 	}
-	d, e := BuildDeploymentFromBytes(ans)
-	return d, apierror.New(e)
+	return d, nil
 }
 
 func (oc *HTTPOmConnection) ReadAutomationConfig() (*AutomationConfig, error) {
-	ans, err := oc.get(fmt.Sprintf("/api/public/v1.0/groups/%s/automationConfig", oc.GroupID()))
+	d, err := oc.ReadDeployment()
 	if err != nil {
 		return nil, err
 	}
-
-	ac, err := BuildAutomationConfigFromBytes(ans)
-
-	return ac, apierror.New(err)
+	return BuildAutomationConfigFromDeployment(d)
 }
 
 // ReadUpdateDeployment performs the "read-modify-update" operation on OpsManager Deployment.
@@ -1044,6 +1046,19 @@ func (oc *HTTPOmConnection) get(path string) ([]byte, error) {
 // getWithContext performs a GET request that is aborted as soon as ctx is done.
 func (oc *HTTPOmConnection) getWithContext(ctx context.Context, path string) ([]byte, error) {
 	return oc.httpVerb(ctx, "GET", path, nil)
+}
+
+// getInto performs a GET request and decodes the response directly into out.
+func (oc *HTTPOmConnection) getInto(path string, out any) error {
+	client, err := oc.getHTTPClient()
+	if err != nil {
+		return err
+	}
+
+	header, err := client.RequestWithContextInto(context.Background(), "GET", oc.BaseURL(), path, nil, out)
+	oc.setVersionFromHeader(header)
+
+	return err
 }
 
 func (oc *HTTPOmConnection) post(path string, v any) ([]byte, error) {
